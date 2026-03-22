@@ -17,9 +17,9 @@
 
 ## 💡 About
 
-**Skill Sprint**는 당신의 현재 역량을 진단하고, 부족한 스킬 갭을 메워줄 YouTube 영상 커리큘럼을 자동으로 큐레이션해주는 AI 서비스입니다.
+**Skill Sprint**는 현재 역량과 목표를 입력하면 AI가 스킬 갭을 진단하고, YouTube 영상 커리큘럼을 자동으로 큐레이션해주는 AI 서비스입니다.
 
-관심 분야를 입력하면 — IT 개발, 기획, 디자인, 마케팅, 금융, 언어 등 **YouTube에 콘텐츠가 존재하는 모든 분야** — AI가 스킬 갭을 분석하고 지금 당장 시작할 수 있는 맞춤형 학습 플레이리스트를 만들어드립니다.
+IT 개발, 디자인, 마케팅, 금융, 언어, 건축 등 **YouTube에 콘텐츠가 존재하는 모든 분야**를 지원합니다. AI가 직접 YouTube 검색 툴을 호출해 영상을 찾는 **Function Calling** 구조로 동작합니다.
 
 ---
 
@@ -27,10 +27,12 @@
 
 | 기능 | 설명 |
 |------|------|
-| 📋 **3단계 폼 입력** | 목표 직무 → 현재 역량 → 학습 선호도를 단계별로 입력 |
-| 🧠 **AI 스킬 갭 진단** | OpenRouter(Gemini)가 현재 수준과 목표 사이의 갭을 분석 |
-| 🎬 **YouTube 커리큘럼 자동 생성** | YouTube Data API를 활용해 갭에 딱 맞는 영상 리스트 큐레이션 |
-| 🌐 **전 분야 지원** | YouTube에 콘텐츠가 있는 모든 분야 학습 가능 |
+| 📋 **3단계 폼 입력** | 현재 역량 → 목표 직무/분야 → 가용 시간을 단계별 입력 |
+| 🧠 **AI 스킬 갭 진단** | Gemini가 현재 수준과 목표 사이의 갭을 3~5개 항목으로 분석 |
+| 🔧 **Function Calling 영상 검색** | AI가 `search_youtube` 툴을 직접 호출해 모듈별 최적 영상을 능동적으로 탐색 |
+| 🔄 **영상 교체** | 마음에 안 드는 영상은 후보 영상으로 즉시 교체 (카드당 최대 3개 후보) |
+| 📚 **분석 기록 보관** | 이전 분석 결과를 브라우저에 자동 저장, 클릭 한 번으로 복원 |
+| 💾 **커리큘럼 저장** | 결과를 `.txt` 파일로 다운로드 |
 
 ---
 
@@ -38,9 +40,29 @@
 
 ```
 Frontend   Next.js 16 (App Router) · TypeScript · Tailwind CSS
-AI         OpenRouter API (Gemini 2.0 Flash) · Structured Output (JSON Schema)
-Data       YouTube Data API v3
-Deploy     Vercel
+AI         OpenRouter API (Gemini 2.0 Flash) · Function Calling · Structured Output (JSON Schema)
+Data       YouTube Data API v3 · 좋아요비율/조회수/최신성 기반 랭킹
+Deploy     Vercel (maxDuration 60s)
+```
+
+---
+
+## 🔧 Function Calling 동작 방식
+
+```
+사용자 입력
+    ↓
+[Phase 1 — Function Calling]
+AI: "모듈 1에 대해 search_youtube('React hooks tutorial 2025') 호출"
+서버: YouTube API 실행 → 영상 필터/랭킹 → 상위 3개 반환
+AI: "모듈 2에 대해 search_youtube('TypeScript generics explained 2025') 호출"
+서버: ...반복...
+    ↓
+[Phase 2 — Structured Output]
+AI: 진단 결과 JSON 반환 (schema 준수)
+서버: Phase 1 영상 데이터 병합
+    ↓
+클라이언트: 단일 API 응답으로 진단 + 커리큘럼 동시 수신
 ```
 
 ---
@@ -91,15 +113,17 @@ skill-sprint/
 ├── app/
 │   ├── page.tsx              # 메인 페이지 (입력 폼 · 로딩 · 결과 대시보드)
 │   └── api/
-│       ├── diagnose/         # AI 스킬 갭 진단 엔드포인트
-│       └── curriculum/       # YouTube 커리큘럼 생성 엔드포인트
+│       ├── diagnose/         # AI 진단 + Function Calling YouTube 검색 통합 엔드포인트
+│       └── curriculum/       # (보조) YouTube 커리큘럼 독립 엔드포인트
 ├── lib/
-│   ├── openrouter.ts         # OpenRouter LLM 클라이언트
-│   ├── youtube.ts            # YouTube API 호출 및 영상 필터링/랭킹
-│   ├── system-prompt.md      # AI 시스템 프롬프트
+│   ├── openrouter.ts         # OpenRouter LLM 클라이언트 + Function Calling 루프
+│   ├── youtube.ts            # YouTube API 호출 · 영상 필터링/랭킹 · 툴 핸들러
+│   ├── system-prompt.md      # AI 시스템 프롬프트 (툴 사용 지시 포함)
 │   └── diagnosis-schema.json # Structured Output JSON Schema
 └── types/
     └── skillsprint.ts        # TypeScript 타입 정의
 ```
 
 ---
+
+<p align="center">Made with ❤️ and ⚡ by 은아</p>
