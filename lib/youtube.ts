@@ -179,9 +179,7 @@ function filterAndRankVideos(videos: VideoMetadata[]): VideoMetadata[] {
  *
  * Function Calling 툴 핸들러에서 호출하는 단일 쿼리 함수.
  * 검색 → 상세조회 → 필터/랭킹 파이프라인을 실행하고 상위 3개를 반환합니다.
- *
- * strict 필터 결과가 3개 미만이면 Shorts(5분 미만)만 제외한 원본 후보로 채워
- * 항상 최대 3개의 후보를 반환합니다.
+ * 조건을 만족하는 영상이 없으면 빈 배열을 반환합니다.
  */
 export async function searchYouTubeForTool(
   query: string,
@@ -189,21 +187,7 @@ export async function searchYouTubeForTool(
 ): Promise<VideoMetadata[]> {
   const videoIds = await searchVideoIds(query, apiKey);
   const rawVideos = await fetchVideoDetails(videoIds, apiKey);
-
-  const strict = filterAndRankVideos(rawVideos);
-  if (strict.length >= 3) return strict.slice(0, 3);
-
-  // fallback: Shorts만 제외하고 strict에 없는 영상으로 채움
-  const strictIds = new Set(strict.map((v) => v.videoId));
-  const fallback = rawVideos
-    .filter(
-      (v) =>
-        v.durationSeconds >= FILTER_CONFIG.MIN_DURATION_SECONDS &&
-        !strictIds.has(v.videoId)
-    )
-    .sort((a, b) => b.viewCount - a.viewCount);
-
-  return [...strict, ...fallback].slice(0, 3);
+  return filterAndRankVideos(rawVideos).slice(0, 3);
 }
 
 // ─── 메인 함수 ─────────────────────────────────────────────

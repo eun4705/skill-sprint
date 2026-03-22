@@ -35,7 +35,8 @@ interface VideoCandidate {
 interface VideoItem {
   description: string;      // 학습 목표 설명
   tag: string;              // 예: "필수" | "핵심" | "심화"
-  candidates: VideoCandidate[]; // 후보 영상 목록 (인덱스 0이 기본 선택)
+  searchQuery?: string;     // 영상 미발견 시 안내에 사용
+  candidates: VideoCandidate[]; // 후보 영상 목록 (인덱스 0이 기본 선택), 빈 배열 = 영상 없음
 }
 
 // 최종적으로 결과 화면에 넘기는 합산 데이터 구조
@@ -125,19 +126,25 @@ async function fetchDiagnosis(form: FormValues): Promise<DiagnoseResponse> {
     video_url: v.videoUrl,
   });
 
-  const videos: VideoItem[] = (d.curriculum ?? [])
-    .filter((m: any) => m.video != null)
-    .map((m: any) => {
-      const primary = mapCandidate(m.video);
-      const rest: VideoCandidate[] = (m.video_candidates ?? [])
-        .filter((c: any) => c.videoId !== m.video.videoId)
-        .map(mapCandidate);
+  const videos: VideoItem[] = (d.curriculum ?? []).map((m: any) => {
+    if (m.video == null) {
       return {
         description: m.learning_objective,
         tag: DIFFICULTY_TAG[m.difficulty] ?? "핵심",
-        candidates: [primary, ...rest],
+        searchQuery: m.search_query,
+        candidates: [],
       };
-    });
+    }
+    const primary = mapCandidate(m.video);
+    const rest: VideoCandidate[] = (m.video_candidates ?? [])
+      .filter((c: any) => c.videoId !== m.video.videoId)
+      .map(mapCandidate);
+    return {
+      description: m.learning_objective,
+      tag: DIFFICULTY_TAG[m.difficulty] ?? "핵심",
+      candidates: [primary, ...rest],
+    };
+  });
 
   return {
     gap_summary: d.summary,
@@ -697,6 +704,7 @@ function ResultDashboard({ data, onReset }: ResultDashboardProps) {
               const ci = videoIndices[i] ?? 0;
               const cur = video.candidates[ci] ?? video.candidates[0];
               const hasMore = video.candidates.length > 1;
+              const noVideo = video.candidates.length === 0;
               return (
                 <div
                   key={i}
@@ -712,6 +720,22 @@ function ResultDashboard({ data, onReset }: ResultDashboardProps) {
                   </div>
 
                   <div className="flex-1 bg-white/60 border border-[#1A1A1A]/8 rounded-2xl overflow-hidden transition-all hover:border-[#1A1A1A]/20 hover:shadow-lg hover:shadow-[#1A1A1A]/8">
+                    {noVideo ? (
+                      <div className="p-4">
+                        <div className="flex items-center gap-2 mb-2 flex-wrap">
+                          <span className="text-[#1A1A1A]/30 text-xs font-mono hidden md:inline">Step {i + 1}</span>
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${tagColor(video.tag)}`}>{video.tag}</span>
+                        </div>
+                        <p className="text-[#1A1A1A]/70 text-sm leading-relaxed mb-3">{video.description}</p>
+                        <div className="bg-[#1A1A1A]/4 rounded-xl p-3 space-y-1">
+                          <p className="text-xs text-[#1A1A1A]/50">
+                            <span className="font-medium text-[#1A1A1A]/60">"{video.searchQuery}"</span> 검색 결과가 충분하지 않습니다.
+                          </p>
+                          <p className="text-xs text-[#1A1A1A]/40">공식 문서, 책, 유료 강의 플랫폼을 통해 학습하는 것을 추천합니다.</p>
+                        </div>
+                      </div>
+                    ) : (
+                    <>
                     <a
                       href={cur.video_url}
                       target="_blank"
@@ -806,6 +830,8 @@ function ResultDashboard({ data, onReset }: ResultDashboardProps) {
                         </button>
                       </div>
                     )}
+                    </>
+                  )}
                   </div>
                 </div>
               );
