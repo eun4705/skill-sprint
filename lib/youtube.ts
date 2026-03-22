@@ -28,11 +28,10 @@ export interface CurriculumVideo {
 
 const FILTER_CONFIG = {
   MAX_AGE_DAYS: 1_095,          // 최근 3년 이내 (니치 분야 커버)
-  MIN_LIKE_RATIO: 0.01,         // 좋아요 비율 1% 이상 (전문 분야 완화)
-  MIN_VIEW_COUNT: 300,          // 최소 조회수 완화 (전문 분야 커버)
-  MAX_DURATION_SECONDS: 3_600,  // 최대 60분
-  MIN_DURATION_SECONDS: 300,    // 최소 5분 (shorts 제외)
-  SEARCH_RESULTS_PER_QUERY: 20, // 후보군 확대
+  MIN_LIKE_RATIO: 0.005,        // 좋아요 비율 0.5% 이상 (전문 분야 완화)
+  MIN_VIEW_COUNT: 100,          // 최소 조회수 완화 (전문 분야 커버)
+  MIN_DURATION_SECONDS: 300,    // 최소 5분 (shorts 제외), 최대 제한 없음
+  SEARCH_RESULTS_PER_QUERY: 25, // 후보군 확대
 } as const;
 
 // ─── 유틸리티 ──────────────────────────────────────────────
@@ -144,6 +143,7 @@ async function fetchVideoDetails(
 /**
  * 메타데이터 기반 필터링 + 스코어링
  *
+ * 필터: 3년 이내 · 좋아요비율 0.5%↑ · 조회수 100↑ · 5분↑ (최대 길이 제한 없음)
  * 점수 공식: (likeRatio × 50) + (log10(viewCount) × 10) - recencyPenalty
  * → 좋아요 비율 가중치 최대, 조회수는 로그 스케일, 오래된 영상은 소폭 감점
  */
@@ -152,12 +152,10 @@ function filterAndRankVideos(videos: VideoMetadata[]): VideoMetadata[] {
 
   return videos
     .filter((v) => {
-      const ageOk    = isWithinDays(v.publishedAt, FILTER_CONFIG.MAX_AGE_DAYS);
-      const ratioOk  = v.likeRatio >= FILTER_CONFIG.MIN_LIKE_RATIO;
-      const viewsOk  = v.viewCount >= FILTER_CONFIG.MIN_VIEW_COUNT;
-      const durOk    =
-        v.durationSeconds >= FILTER_CONFIG.MIN_DURATION_SECONDS &&
-        v.durationSeconds <= FILTER_CONFIG.MAX_DURATION_SECONDS;
+      const ageOk   = isWithinDays(v.publishedAt, FILTER_CONFIG.MAX_AGE_DAYS);
+      const ratioOk = v.likeRatio >= FILTER_CONFIG.MIN_LIKE_RATIO;
+      const viewsOk = v.viewCount >= FILTER_CONFIG.MIN_VIEW_COUNT;
+      const durOk   = v.durationSeconds >= FILTER_CONFIG.MIN_DURATION_SECONDS;
       return ageOk && ratioOk && viewsOk && durOk;
     })
     .sort((a, b) => {
