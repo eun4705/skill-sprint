@@ -309,7 +309,7 @@ export async function diagnoseWithYouTube(
       temperature: 0.3,
       max_tokens: 2048,
       tools: [SEARCH_YOUTUBE_TOOL],
-      tool_choice: "auto",
+      tool_choice: "required",
       messages,
     });
 
