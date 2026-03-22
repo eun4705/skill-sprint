@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { diagnoseSkillGap, type UserInput } from "@/lib/openrouter";
+import { diagnoseWithYouTube, type UserInput } from "@/lib/openrouter";
+
+// Vercel 서버리스 함수 타임아웃 60초 (Function Calling + YouTube API 시간 확보)
+export const maxDuration = 60;
 
 // ─── 요청 바디 타입 ──────────────────────────────────────────────────────────
 // UserInput과 동일하지만, HTTP 레이어에서 별도로 선언해
@@ -56,6 +59,13 @@ export async function POST(req: NextRequest) {
       { status: 500 }
     );
   }
+  if (!process.env.YOUTUBE_API_KEY) {
+    console.error("[/api/diagnose] YOUTUBE_API_KEY 환경 변수가 설정되지 않았습니다.");
+    return NextResponse.json(
+      { success: false, error: "서버 설정 오류: YouTube API 키가 없습니다." },
+      { status: 500 }
+    );
+  }
 
   // ── 2. 요청 바디 파싱 ──────────────────────────────────────────────────────
   let body: DiagnoseRequestBody;
@@ -86,7 +96,11 @@ export async function POST(req: NextRequest) {
   };
 
   try {
-    const result = await diagnoseSkillGap(userInput, body.model);
+    const result = await diagnoseWithYouTube(
+      userInput,
+      process.env.YOUTUBE_API_KEY,
+      body.model
+    );
 
     return NextResponse.json(
       { success: true, data: result },

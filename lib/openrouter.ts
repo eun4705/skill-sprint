@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import fs from "fs";
 import path from "path";
 import type { DiagnosisResult } from "@/types/skillsprint";
+import { searchYouTubeForTool, type VideoMetadata } from "@/lib/youtube";
 
 // ─── 싱글턴 클라이언트 ───────────────────────────────────────────────────────
 // OpenAI SDK의 baseURL만 교체해 OpenRouter를 호출합니다.
@@ -189,6 +190,182 @@ export async function diagnoseSkillGap(
   // ── 4. JSON 파싱 및 검증 ───────────────────────────────────────────────────
   const parsed = safeParseJSON(rawContent);
   assertDiagnosisResult(parsed);
+
+  return parsed;
+}
+
+// ─── Function Calling 툴 정의 ────────────────────────────────────────────────
+
+const SEARCH_YOUTUBE_TOOL: OpenAI.Chat.ChatCompletionTool = {
+  type: "function",
+  function: {
+    name: "search_youtube",
+    description:
+      "Search YouTube for a learning video for a specific curriculum module. " +
+      "Call this once for each module you identify, before returning the final JSON.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description:
+            "YouTube search query in English (e.g. 'React hooks tutorial 2024')",
+        },
+        module_order: {
+          type: "integer",
+          description: "The module's sequence number (1-based)",
+        },
+      },
+      required: ["query", "module_order"],
+    },
+  },
+};
+
+/** 툴 호출 배열을 병렬 실행하고 tool message 배열로 반환 */
+async function executeToolCalls(
+  toolCalls: OpenAI.Chat.ChatCompletionMessageToolCall[],
+  youtubeApiKey: string,
+  videoMap: Map<number, VideoMetadata[]>
+): Promise<OpenAI.Chat.ChatCompletionToolMessageParam[]> {
+  return Promise.all(
+    toolCalls.map(async (tc) => {
+      let content: string;
+      const tcFunc = (tc as any).function as { name: string; arguments: string } | undefined;
+      if (tcFunc?.name === "search_youtube") {
+        try {
+          const args = JSON.parse(tcFunc.arguments) as {
+            query: string;
+            module_order: number;
+          };
+          const videos = await searchYouTubeForTool(args.query, youtubeApiKey);
+          videoMap.set(args.module_order, videos);
+          content = JSON.stringify({
+            found: videos.length,
+            videos: videos.map((v) => ({
+              videoId: v.videoId,
+              title: v.title,
+              channelTitle: v.channelTitle,
+              durationSeconds: v.durationSeconds,
+              viewCount: v.viewCount,
+              likeRatio: Number(v.likeRatio.toFixed(3)),
+            })),
+          });
+        } catch (err) {
+          content = JSON.stringify({ error: String(err), found: 0, videos: [] });
+        }
+      } else {
+        content = JSON.stringify({ error: "Unknown tool" });
+      }
+      return { role: "tool" as const, tool_call_id: tc.id, content };
+    })
+  );
+}
+
+// ─── Function Calling 진단 함수 ──────────────────────────────────────────────
+
+/**
+ * diagnoseWithYouTube
+ *
+ * 2-Phase Function Calling 플로우:
+ *   Phase 1 — AI가 search_youtube 툴을 호출해 각 모듈의 YouTube 영상 검색
+ *   Phase 2 — AI가 최종 DiagnosisResult JSON 반환, 서버가 영상 데이터 병합
+ *
+ * @param input          사용자 역량/목표/시간 정보
+ * @param youtubeApiKey  YouTube Data API v3 키
+ * @param model          OpenRouter 모델 ID
+ */
+export async function diagnoseWithYouTube(
+  input: UserInput,
+  youtubeApiKey: string,
+  model: string = process.env.OPENROUTER_MODEL ?? "google/gemini-2.0-flash-001"
+): Promise<DiagnosisResult> {
+  // ── 기본 입력 검증 ──────────────────────────────────────────────────────────
+  if (!input.currentSkills.trim()) throw new Error("currentSkills는 필수 입력값입니다.");
+  if (!input.targetRole.trim()) throw new Error("targetRole은 필수 입력값입니다.");
+  if (input.weeklyHours <= 0 || input.weeklyHours > 168)
+    throw new Error("weeklyHours는 1~168 사이의 값이어야 합니다.");
+
+  const systemWithSchema = [
+    SYSTEM_PROMPT,
+    "",
+    "## REQUIRED JSON SCHEMA",
+    "You MUST respond with a single JSON object that strictly conforms to the schema below.",
+    "```json",
+    JSON.stringify(DIAGNOSIS_SCHEMA, null, 2),
+    "```",
+  ].join("\n");
+
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: "system", content: systemWithSchema },
+    { role: "user", content: buildUserMessage(input) },
+  ];
+
+  const videoMap = new Map<number, VideoMetadata[]>();
+
+  // ── Phase 1: Function Calling — AI decides queries, server fetches videos ──
+  try {
+    const phase1 = await openrouter.chat.completions.create({
+      model,
+      temperature: 0.3,
+      max_tokens: 2048,
+      tools: [SEARCH_YOUTUBE_TOOL],
+      tool_choice: "auto",
+      messages,
+    });
+
+    const assistantMsg = phase1.choices[0].message;
+    messages.push(assistantMsg as OpenAI.Chat.ChatCompletionMessageParam);
+
+    if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
+      const toolResults = await executeToolCalls(
+        assistantMsg.tool_calls,
+        youtubeApiKey,
+        videoMap
+      );
+      messages.push(...toolResults);
+      console.log(
+        `[openrouter] Phase 1 완료: ${videoMap.size}개 모듈 영상 검색됨`
+      );
+    } else {
+      console.warn("[openrouter] Phase 1: 툴 호출 없이 응답 반환됨");
+    }
+  } catch (err) {
+    // Phase 1 실패는 non-fatal — Phase 2에서 영상 없이 JSON만 반환
+    console.warn("[openrouter] Phase 1 (Function Calling) 실패:", err);
+  }
+
+  // ── Phase 2: 최종 JSON 생성 ──────────────────────────────────────────────
+  let rawContent: string;
+  try {
+    const phase2 = await openrouter.chat.completions.create({
+      model,
+      temperature: 0.3,
+      max_tokens: 4096,
+      response_format: { type: "json_object" },
+      messages,
+    });
+
+    rawContent = phase2.choices[0]?.message?.content ?? "";
+    if (!rawContent) throw new Error("LLM이 빈 응답을 반환했습니다.");
+  } catch (err) {
+    if (err instanceof OpenAI.APIError) {
+      throw new Error(`[openrouter] API 오류 ${err.status}: ${err.message}`);
+    }
+    throw err;
+  }
+
+  // ── Parse + validate + 영상 데이터 병합 ────────────────────────────────────
+  const parsed = safeParseJSON(rawContent);
+  assertDiagnosisResult(parsed);
+
+  // Phase 1에서 수집한 영상 데이터를 curriculum 각 모듈에 주입
+  for (const module of parsed.curriculum) {
+    const videos = videoMap.get(module.order);
+    if (videos && videos.length > 0) {
+      (module as any).video = videos[0];
+      (module as any).video_candidates = videos;
+    }
+  }
 
   return parsed;
 }

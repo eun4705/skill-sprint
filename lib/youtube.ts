@@ -174,6 +174,23 @@ function filterAndRankVideos(videos: VideoMetadata[]): VideoMetadata[] {
     });
 }
 
+// ─── 툴 핸들러용 단일 쿼리 함수 ────────────────────────────
+
+/**
+ * searchYouTubeForTool
+ *
+ * Function Calling 툴 핸들러에서 호출하는 단일 쿼리 함수.
+ * 검색 → 상세조회 → 필터/랭킹 파이프라인을 실행하고 상위 3개를 반환합니다.
+ */
+export async function searchYouTubeForTool(
+  query: string,
+  apiKey: string
+): Promise<VideoMetadata[]> {
+  const videoIds = await searchVideoIds(query, apiKey);
+  const rawVideos = await fetchVideoDetails(videoIds, apiKey);
+  return filterAndRankVideos(rawVideos).slice(0, 3);
+}
+
 // ─── 메인 함수 ─────────────────────────────────────────────
 
 /**

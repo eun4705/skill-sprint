@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import type { LearningModule } from "@/types/skillsprint";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -15,9 +14,7 @@ interface DiagnoseResponse {
   target_role: string;
   skills: SkillGap[];
   estimated_weeks: number;
-  modules: LearningModule[];     // 커리큘럼 API에 전달할 전체 모듈 객체
-  available_minutes: number;     // 주간 학습 가용 시간 (분)
-  weekly_hours: number;          // 주간 학습 가용 시간 (시간)
+  videos: VideoItem[];           // Function Calling으로 이미 수집된 영상 목록
 }
 
 interface HistoryItem {
@@ -41,14 +38,10 @@ interface VideoItem {
   candidates: VideoCandidate[]; // 후보 영상 목록 (인덱스 0이 기본 선택)
 }
 
-interface CurriculumResponse {
-  videos: VideoItem[];
-}
-
 // 최종적으로 결과 화면에 넘기는 합산 데이터 구조
 interface ResultData {
   diagnosis: DiagnoseResponse;
-  curriculum: CurriculumResponse;
+  curriculum: { videos: VideoItem[] };
 }
 
 // 폼에서 수집하는 유저 입력값
@@ -107,7 +100,7 @@ async function fetchDiagnosis(form: FormValues): Promise<DiagnoseResponse> {
       currentSkills: form.skills,
       targetRole: form.goal,
       weeklyHours,
-      additionalContext: form.time, // 원문 그대로 AI에게 전달
+      additionalContext: form.time,
     }),
   });
 
@@ -117,56 +110,13 @@ async function fetchDiagnosis(form: FormValues): Promise<DiagnoseResponse> {
   }
 
   const json = await res.json();
-  // 백엔드 응답: { success: true, data: DiagnosisResult }
   if (!json.success) {
     throw new Error(json.error ?? "/api/diagnose 알 수 없는 오류");
   }
 
   const d = json.data;
 
-  // DiagnosisResult → DiagnoseResponse 변환
-  return {
-    gap_summary: d.summary,
-    target_role: d.target_role ?? "",
-    skills: (d.skill_gaps ?? []).map((g: any) => ({
-      label: g.skill_name,
-      // severity(1~10, 높을수록 심각) → level(0~100, 낮을수록 갭이 큼)
-      level: Math.max(5, (10 - g.severity) * 10),
-    })),
-    estimated_weeks: d.estimated_weeks_to_ready,
-    modules: d.curriculum ?? [],          // LearningModule[] 그대로 보존
-    available_minutes: Math.round(d.weekly_hours_available * 60),
-    weekly_hours: d.weekly_hours_available,
-  };
-}
-
-async function fetchCurriculum(
-  modules: LearningModule[],
-  availableMinutes: number,
-  weeklyHours?: number
-): Promise<CurriculumResponse> {
-  const res = await fetch("/api/curriculum", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      search_queries: modules,       // LearningModule[] 전체 전달
-      available_minutes: availableMinutes,
-      weekly_hours: weeklyHours,
-    }),
-  });
-
-  if (!res.ok) {
-    const errorBody = await res.text();
-    throw new Error(`/api/curriculum 오류 (${res.status}): ${errorBody}`);
-  }
-
-  const json = await res.json();
-  if (!json.success) {
-    throw new Error(json.error ?? "/api/curriculum 알 수 없는 오류");
-  }
-
-  // 백엔드 응답: { success: true, data: CurriculumItem[], meta }
-  // CurriculumItem → VideoItem 변환 (video가 null인 항목은 제외)
+  // Function Calling으로 수집된 영상 데이터 매핑
   const mapCandidate = (v: any): VideoCandidate => ({
     title: v.title,
     channel: v.channelTitle,
@@ -175,22 +125,32 @@ async function fetchCurriculum(
     video_url: v.videoUrl,
   });
 
-  const videos: VideoItem[] = (json.data ?? [])
-    .filter((item: any) => !item.video_not_found && item.video)
-    .map((item: any) => {
-      const primary = mapCandidate(item.video);
-      const rest: VideoCandidate[] = (item.video_candidates ?? [])
-        .filter((c: any) => c.videoId !== item.video.videoId)
+  const videos: VideoItem[] = (d.curriculum ?? [])
+    .filter((m: any) => m.video != null)
+    .map((m: any) => {
+      const primary = mapCandidate(m.video);
+      const rest: VideoCandidate[] = (m.video_candidates ?? [])
+        .filter((c: any) => c.videoId !== m.video.videoId)
         .map(mapCandidate);
       return {
-        description: item.learning_objective,
-        tag: DIFFICULTY_TAG[item.difficulty] ?? "핵심",
+        description: m.learning_objective,
+        tag: DIFFICULTY_TAG[m.difficulty] ?? "핵심",
         candidates: [primary, ...rest],
       };
     });
 
-  return { videos };
+  return {
+    gap_summary: d.summary,
+    target_role: d.target_role ?? "",
+    skills: (d.skill_gaps ?? []).map((g: any) => ({
+      label: g.skill_name,
+      level: Math.max(5, (10 - g.severity) * 10),
+    })),
+    estimated_weeks: d.estimated_weeks_to_ready,
+    videos,
+  };
 }
+
 
 // ─── Tag Color Map ────────────────────────────────────────────────────────────
 const TAG_COLORS: Record<string, string> = {
@@ -948,29 +908,29 @@ export default function SkillSprintPage() {
     setScreen("loading");
     setLoadingStep(0);
 
+    // 로딩 스텝 시뮬레이션 (단일 API 호출 중 진행 표시)
+    const stepTimer = setInterval(() => {
+      setLoadingStep((prev) => (prev < 3 ? prev + 1 : prev));
+    }, 3500);
+
     try {
-      // Step 0~1: 역량 프로파일 분석 + 스킬 갭 진단
-      setLoadingStep(0);
+      // 단일 API 호출: AI 진단 + Function Calling으로 YouTube 영상까지 수집
       const diagnosis = await fetchDiagnosis(formValues);
 
-      // Step 2: 최적 학습 경로 설계
-      setLoadingStep(2);
-      const curriculum = await fetchCurriculum(
-        diagnosis.modules,
-        diagnosis.available_minutes,
-        diagnosis.weekly_hours
-      );
-
-      // Step 3: 유튜브 커리큘럼 구성 완료
+      clearInterval(stepTimer);
       setLoadingStep(3);
 
       await new Promise((resolve) => setTimeout(resolve, 400));
 
-      const newResult: ResultData = { diagnosis, curriculum };
+      const newResult: ResultData = {
+        diagnosis,
+        curriculum: { videos: diagnosis.videos },
+      };
       saveToHistory(newResult);
       setResultData(newResult);
       setScreen("result");
     } catch (err) {
+      clearInterval(stepTimer);
       const message =
         err instanceof Error ? err.message : "알 수 없는 오류가 발생했습니다.";
       setErrorMessage(message);
