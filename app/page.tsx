@@ -347,15 +347,15 @@ function InputForm({ onSubmit }: InputFormProps) {
     {
       id: "skills" as const,
       label: "현재 보유 역량",
-      placeholder: "예: HTML, CSS, JavaScript 기초, Python 입문 수준",
-      hint: "현재 알고 있는 기술, 언어, 툴을 자유롭게 적어주세요",
+      placeholder: "예: HTML/CSS 기초, 악보 읽기 가능, 영어 중급, 건축 AutoCAD 입문",
+      hint: "현재 알고 있는 기술, 지식, 경험을 분야 상관없이 자유롭게 적어주세요",
       icon: "🧠",
     },
     {
       id: "goal" as const,
       label: "목표 직무 / 프로젝트",
-      placeholder: "예: 프론트엔드 개발자로 취업, Next.js 포트폴리오 제작",
-      hint: "이루고 싶은 목표나 만들고 싶은 것을 구체적으로 적어주세요",
+      placeholder: "예: 프론트엔드 개발자 취업, 재즈 피아노 연주, JLPT N2 합격, 실내건축 설계",
+      hint: "이루고 싶은 목표를 분야 상관없이 구체적으로 적어주세요",
       icon: "🎯",
     },
     {
