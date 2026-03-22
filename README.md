@@ -103,5 +103,3 @@ skill-sprint/
 ```
 
 ---
-
-<p align="center">Made with ❤️ and ⚡ by 은아</p>
