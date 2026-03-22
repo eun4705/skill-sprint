@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { LearningModule } from "@/types/skillsprint";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -12,6 +12,7 @@ interface SkillGap {
 
 interface DiagnoseResponse {
   gap_summary: string;
+  target_role: string;
   skills: SkillGap[];
   estimated_weeks: number;
   modules: LearningModule[];     // 커리큘럼 API에 전달할 전체 모듈 객체
@@ -19,14 +20,25 @@ interface DiagnoseResponse {
   weekly_hours: number;          // 주간 학습 가용 시간 (시간)
 }
 
-interface VideoItem {
+interface HistoryItem {
+  id: string;
+  createdAt: string;
+  targetRole: string;
+  result: ResultData;
+}
+
+interface VideoCandidate {
   title: string;
   channel: string;
-  duration: string;         // 예: "1:42:30"
-  thumbnail: string;        // 유튜브 썸네일 URL
-  video_url: string;        // 유튜브 영상 링크
-  description: string;      // 영상 설명 한 줄
-  tag: string;              // 예: "필수" | "핵심" | "실전" | "심화"
+  duration: string;
+  thumbnail: string;
+  video_url: string;
+}
+
+interface VideoItem {
+  description: string;      // 학습 목표 설명
+  tag: string;              // 예: "필수" | "핵심" | "심화"
+  candidates: VideoCandidate[]; // 후보 영상 목록 (인덱스 0이 기본 선택)
 }
 
 interface CurriculumResponse {
@@ -115,6 +127,7 @@ async function fetchDiagnosis(form: FormValues): Promise<DiagnoseResponse> {
   // DiagnosisResult → DiagnoseResponse 변환
   return {
     gap_summary: d.summary,
+    target_role: d.target_role ?? "",
     skills: (d.skill_gaps ?? []).map((g: any) => ({
       label: g.skill_name,
       // severity(1~10, 높을수록 심각) → level(0~100, 낮을수록 갭이 큼)
@@ -154,17 +167,27 @@ async function fetchCurriculum(
 
   // 백엔드 응답: { success: true, data: CurriculumItem[], meta }
   // CurriculumItem → VideoItem 변환 (video가 null인 항목은 제외)
+  const mapCandidate = (v: any): VideoCandidate => ({
+    title: v.title,
+    channel: v.channelTitle,
+    duration: formatDuration(v.durationSeconds),
+    thumbnail: v.thumbnailUrl,
+    video_url: v.videoUrl,
+  });
+
   const videos: VideoItem[] = (json.data ?? [])
     .filter((item: any) => !item.video_not_found && item.video)
-    .map((item: any) => ({
-      title: item.video.title,
-      channel: item.video.channelTitle,
-      duration: formatDuration(item.video.durationSeconds),
-      thumbnail: item.video.thumbnailUrl,
-      video_url: item.video.videoUrl,
-      description: item.learning_objective,
-      tag: DIFFICULTY_TAG[item.difficulty] ?? "핵심",
-    }));
+    .map((item: any) => {
+      const primary = mapCandidate(item.video);
+      const rest: VideoCandidate[] = (item.video_candidates ?? [])
+        .filter((c: any) => c.videoId !== item.video.videoId)
+        .map(mapCandidate);
+      return {
+        description: item.learning_objective,
+        tag: DIFFICULTY_TAG[item.difficulty] ?? "핵심",
+        candidates: [primary, ...rest],
+      };
+    });
 
   return { videos };
 }
@@ -333,9 +356,12 @@ function ErrorScreen({
 
 interface InputFormProps {
   onSubmit: (values: FormValues) => void;
+  history: HistoryItem[];
+  onRestoreHistory: (item: HistoryItem) => void;
+  onDeleteHistory: (id: string) => void;
 }
 
-function InputForm({ onSubmit }: InputFormProps) {
+function InputForm({ onSubmit, history, onRestoreHistory, onDeleteHistory }: InputFormProps) {
   const [step, setStep] = useState(1);
   const [values, setValues] = useState<FormValues>({
     skills: "",
@@ -453,6 +479,47 @@ function InputForm({ onSubmit }: InputFormProps) {
             {isLastStep ? "⌘ + Enter로 생성" : "⌘ + Enter로 다음 단계"}
           </p>
 
+          {/* History */}
+          {history.length > 0 && (
+            <div className="mt-10">
+              <p className="text-[#1A1A1A]/40 text-xs font-mono uppercase tracking-widest mb-3">
+                이전 분석 기록
+              </p>
+              <div className="space-y-2">
+                {history.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center justify-between bg-white/50 border border-[#1A1A1A]/10 rounded-xl px-4 py-3 group"
+                  >
+                    <button
+                      onClick={() => onRestoreHistory(item)}
+                      className="flex-1 text-left"
+                    >
+                      <p className="text-[#1A1A1A] text-sm font-medium truncate">
+                        {item.targetRole}
+                      </p>
+                      <p className="text-[#1A1A1A]/40 text-xs mt-0.5">
+                        {new Date(item.createdAt).toLocaleDateString("ko-KR", {
+                          month: "short",
+                          day: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </p>
+                    </button>
+                    <button
+                      onClick={() => onDeleteHistory(item.id)}
+                      className="ml-3 text-[#1A1A1A]/20 hover:text-rose-400 transition-colors text-xs"
+                      aria-label="삭제"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Navigation */}
           <div className="flex items-center justify-between mt-5">
             {step > 1 ? (
@@ -502,6 +569,18 @@ interface ResultDashboardProps {
 
 function ResultDashboard({ data, onReset }: ResultDashboardProps) {
   const { diagnosis, curriculum } = data;
+  const [videoIndices, setVideoIndices] = useState<number[]>(
+    () => curriculum.videos.map(() => 0)
+  );
+
+  const cycleVideo = (i: number) => {
+    setVideoIndices((prev) => {
+      const next = [...prev];
+      const total = curriculum.videos[i].candidates.length;
+      next[i] = total > 1 ? (prev[i] + 1) % total : 0;
+      return next;
+    });
+  };
 
   const handleSave = () => {
     const lines = [
@@ -516,10 +595,10 @@ function ResultDashboard({ data, onReset }: ResultDashboardProps) {
       ...diagnosis.skills.map((s) => `• ${s.label} (현재 수준 ${s.level}%)`),
       "",
       "[ 추천 커리큘럼 ]",
-      ...curriculum.videos.map(
-        (v, i) =>
-          `Step ${i + 1}. ${v.title}\n   채널: ${v.channel} | 길이: ${v.duration} | 태그: ${v.tag}\n   ${v.video_url}`
-      ),
+      ...curriculum.videos.map((v, i) => {
+        const c = v.candidates[videoIndices[i] ?? 0] ?? v.candidates[0];
+        return `Step ${i + 1}. ${c.title}\n   채널: ${c.channel} | 길이: ${c.duration} | 태그: ${v.tag}\n   ${c.video_url}`;
+      }),
       "",
       "SKILL SPRINT · AI 기반 맞춤 학습 설계",
     ];
@@ -654,97 +733,123 @@ function ResultDashboard({ data, onReset }: ResultDashboardProps) {
           <div className="absolute left-[22px] top-8 bottom-8 w-px bg-[#1A1A1A]/10 hidden md:block" />
 
           <div className="space-y-4">
-            {curriculum.videos.map((video, i) => (
-              <a
-                key={i}
-                href={video.video_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex gap-4 group no-underline"
-                style={{
-                  animation: "fadeUp 0.5s ease forwards",
-                  animationDelay: `${i * 0.08}s`,
-                  opacity: 0,
-                }}
-              >
-                <div className="flex-shrink-0 w-11 h-11 rounded-full bg-[#1A1A1A] text-[#F5F0E8] flex items-center justify-center text-sm font-bold z-10 relative hidden md:flex">
-                  {i + 1}
-                </div>
+            {curriculum.videos.map((video, i) => {
+              const ci = videoIndices[i] ?? 0;
+              const cur = video.candidates[ci] ?? video.candidates[0];
+              const hasMore = video.candidates.length > 1;
+              return (
+                <div
+                  key={i}
+                  className="flex gap-4 group"
+                  style={{
+                    animation: "fadeUp 0.5s ease forwards",
+                    animationDelay: `${i * 0.08}s`,
+                    opacity: 0,
+                  }}
+                >
+                  <div className="flex-shrink-0 w-11 h-11 rounded-full bg-[#1A1A1A] text-[#F5F0E8] flex items-center justify-center text-sm font-bold z-10 relative hidden md:flex">
+                    {i + 1}
+                  </div>
 
-                <div className="flex-1 bg-white/60 hover:bg-white/90 border border-[#1A1A1A]/8 hover:border-[#1A1A1A]/20 rounded-2xl overflow-hidden cursor-pointer transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-[#1A1A1A]/8">
-                  <div className="flex">
+                  <div className="flex-1 bg-white/60 border border-[#1A1A1A]/8 rounded-2xl overflow-hidden transition-all hover:border-[#1A1A1A]/20 hover:shadow-lg hover:shadow-[#1A1A1A]/8">
+                    <a
+                      href={cur.video_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex no-underline hover:bg-white/90 transition-all hover:-translate-y-0.5 block"
+                    >
+                      <div className="flex">
+                        {/* Thumbnail */}
+                        <div className="w-32 md:w-44 flex-shrink-0 relative bg-[#1A1A1A]/5 aspect-video">
+                          <img
+                            src={cur.thumbnail}
+                            alt={cur.title}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).src =
+                                "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='176' height='99' viewBox='0 0 176 99'%3E%3Crect fill='%231A1A1A' opacity='0.08' width='176' height='99'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%231A1A1A' opacity='0.3' font-size='28'%3E%E2%96%B6%3C/text%3E%3C/svg%3E";
+                            }}
+                          />
+                          <div className="absolute inset-0 bg-[#1A1A1A]/0 group-hover:bg-[#1A1A1A]/20 transition-all flex items-center justify-center">
+                            <div className="w-8 h-8 rounded-full bg-white/90 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all scale-75 group-hover:scale-100">
+                              <svg
+                                className="w-3 h-3 text-[#1A1A1A] ml-0.5"
+                                fill="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path d="M8 5v14l11-7z" />
+                              </svg>
+                            </div>
+                          </div>
+                          <div className="absolute bottom-1.5 right-1.5 bg-[#1A1A1A]/80 text-[#F5F0E8] text-xs px-1.5 py-0.5 rounded font-mono">
+                            {cur.duration}
+                          </div>
+                        </div>
 
-                    {/* Thumbnail */}
-                    <div className="w-32 md:w-44 flex-shrink-0 relative bg-[#1A1A1A]/5 aspect-video">
-                      <img
-                        src={video.thumbnail}
-                        alt={video.title}
-                        className="w-full h-full object-cover"
-                        onError={(e) => {
-                          (e.target as HTMLImageElement).src =
-                            "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='176' height='99' viewBox='0 0 176 99'%3E%3Crect fill='%231A1A1A' opacity='0.08' width='176' height='99'/%3E%3Ctext x='50%25' y='50%25' text-anchor='middle' dy='.3em' fill='%231A1A1A' opacity='0.3' font-size='28'%3E%E2%96%B6%3C/text%3E%3C/svg%3E";
-                        }}
-                      />
-                      <div className="absolute inset-0 bg-[#1A1A1A]/0 group-hover:bg-[#1A1A1A]/20 transition-all flex items-center justify-center">
-                        <div className="w-8 h-8 rounded-full bg-white/90 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all scale-75 group-hover:scale-100">
-                          <svg
-                            className="w-3 h-3 text-[#1A1A1A] ml-0.5"
-                            fill="currentColor"
-                            viewBox="0 0 24 24"
+                        {/* Content */}
+                        <div className="flex-1 p-4">
+                          <div className="flex items-center gap-2 mb-2 flex-wrap">
+                            <span className="text-[#1A1A1A]/30 text-xs font-mono hidden md:inline">
+                              Step {i + 1}
+                            </span>
+                            <span
+                              className={`text-xs px-2 py-0.5 rounded-full font-medium ${tagColor(
+                                video.tag
+                              )}`}
+                            >
+                              {video.tag}
+                            </span>
+                          </div>
+
+                          <h3
+                            className="text-[#1A1A1A] font-semibold text-sm md:text-base leading-snug mb-1.5"
+                            style={{ fontFamily: "'Georgia', serif" }}
                           >
-                            <path d="M8 5v14l11-7z" />
-                          </svg>
+                            {cur.title}
+                          </h3>
+                          <p className="text-[#1A1A1A]/50 text-xs leading-relaxed mb-3 hidden md:block">
+                            {video.description}
+                          </p>
+
+                          <div className="flex items-center gap-1.5">
+                            <div className="w-4 h-4 rounded-full bg-rose-500 flex items-center justify-center flex-shrink-0">
+                              <svg
+                                className="w-2.5 h-2.5 text-white"
+                                fill="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+                              </svg>
+                            </div>
+                            <span className="text-[#1A1A1A]/40 text-xs">
+                              {cur.channel}
+                            </span>
+                          </div>
                         </div>
                       </div>
-                      <div className="absolute bottom-1.5 right-1.5 bg-[#1A1A1A]/80 text-[#F5F0E8] text-xs px-1.5 py-0.5 rounded font-mono">
-                        {video.duration}
-                      </div>
-                    </div>
+                    </a>
 
-                    {/* Content */}
-                    <div className="flex-1 p-4">
-                      <div className="flex items-center gap-2 mb-2 flex-wrap">
-                        <span className="text-[#1A1A1A]/30 text-xs font-mono hidden md:inline">
-                          Step {i + 1}
+                    {/* Refresh button */}
+                    {hasMore && (
+                      <div className="border-t border-[#1A1A1A]/6 px-4 py-2 flex items-center justify-between">
+                        <span className="text-[#1A1A1A]/30 text-xs">
+                          {ci + 1} / {video.candidates.length}번 영상
                         </span>
-                        <span
-                          className={`text-xs px-2 py-0.5 rounded-full font-medium ${tagColor(
-                            video.tag
-                          )}`}
+                        <button
+                          onClick={() => cycleVideo(i)}
+                          className="text-[#1A1A1A]/40 hover:text-[#1A1A1A] text-xs flex items-center gap-1 transition-colors"
                         >
-                          {video.tag}
-                        </span>
-                      </div>
-
-                      <h3
-                        className="text-[#1A1A1A] font-semibold text-sm md:text-base leading-snug mb-1.5"
-                        style={{ fontFamily: "'Georgia', serif" }}
-                      >
-                        {video.title}
-                      </h3>
-                      <p className="text-[#1A1A1A]/50 text-xs leading-relaxed mb-3 hidden md:block">
-                        {video.description}
-                      </p>
-
-                      <div className="flex items-center gap-1.5">
-                        <div className="w-4 h-4 rounded-full bg-rose-500 flex items-center justify-center flex-shrink-0">
-                          <svg
-                            className="w-2.5 h-2.5 text-white"
-                            fill="currentColor"
-                            viewBox="0 0 24 24"
-                          >
-                            <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z" />
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                           </svg>
-                        </div>
-                        <span className="text-[#1A1A1A]/40 text-xs">
-                          {video.channel}
-                        </span>
+                          다른 영상 보기
+                        </button>
                       </div>
-                    </div>
+                    )}
                   </div>
                 </div>
-              </a>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -793,6 +898,9 @@ function ResultDashboard({ data, onReset }: ResultDashboardProps) {
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
+const HISTORY_KEY = "skillsprint_history";
+const MAX_HISTORY = 5;
+
 type Screen = "form" | "loading" | "result" | "error";
 
 export default function SkillSprintPage() {
@@ -800,6 +908,41 @@ export default function SkillSprintPage() {
   const [loadingStep, setLoadingStep] = useState(0);
   const [resultData, setResultData] = useState<ResultData | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+
+  // Load history from localStorage on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY);
+      if (raw) setHistory(JSON.parse(raw));
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const saveToHistory = (result: ResultData) => {
+    const item: HistoryItem = {
+      id: Date.now().toString(),
+      createdAt: new Date().toISOString(),
+      targetRole: result.diagnosis.target_role || "분석 결과",
+      result,
+    };
+    const next = [item, ...history].slice(0, MAX_HISTORY);
+    setHistory(next);
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+    } catch {
+      // ignore storage quota errors
+    }
+  };
+
+  const handleDeleteHistory = (id: string) => {
+    const next = history.filter((h) => h.id !== id);
+    setHistory(next);
+    try {
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
+    } catch {}
+  };
 
   const handleFormSubmit = async (formValues: FormValues) => {
     setScreen("loading");
@@ -823,7 +966,9 @@ export default function SkillSprintPage() {
 
       await new Promise((resolve) => setTimeout(resolve, 400));
 
-      setResultData({ diagnosis, curriculum });
+      const newResult: ResultData = { diagnosis, curriculum };
+      saveToHistory(newResult);
+      setResultData(newResult);
       setScreen("result");
     } catch (err) {
       const message =
@@ -840,9 +985,21 @@ export default function SkillSprintPage() {
     setLoadingStep(0);
   };
 
+  const handleRestoreHistory = (item: HistoryItem) => {
+    setResultData(item.result);
+    setScreen("result");
+  };
+
   if (screen === "loading") return <LoadingScreen loadingStep={loadingStep} />;
   if (screen === "error") return <ErrorScreen message={errorMessage} onRetry={handleReset} />;
   if (screen === "result" && resultData) return <ResultDashboard data={resultData} onReset={handleReset} />;
 
-  return <InputForm onSubmit={handleFormSubmit} />;
+  return (
+    <InputForm
+      onSubmit={handleFormSubmit}
+      history={history}
+      onRestoreHistory={handleRestoreHistory}
+      onDeleteHistory={handleDeleteHistory}
+    />
+  );
 }

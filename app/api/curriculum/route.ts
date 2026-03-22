@@ -62,6 +62,7 @@ interface CurriculumItem {
    */
   allocated_minutes: number;
   video: VideoMetadata | null;
+  video_candidates: VideoMetadata[];
   video_not_found: boolean;
 }
 
@@ -364,6 +365,7 @@ export async function POST(req: NextRequest) {
     search_query:        result.searchQuery,
     allocated_minutes:   allocations[idx],
     video:               result.video,
+    video_candidates:    result.videos ?? [],
     video_not_found:     result.video === null,
   }));
 

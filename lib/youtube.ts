@@ -20,6 +20,7 @@ export interface VideoMetadata {
 export interface CurriculumVideo {
   module: LearningModule;
   video: VideoMetadata | null;  // null = 조건을 만족하는 영상 없음
+  videos: VideoMetadata[];      // 상위 3개 후보 (교체용)
   searchQuery: string;
 }
 
@@ -204,6 +205,7 @@ export async function fetchYouTubeCurriculum(
       return {
         module,
         video:       ranked[0] ?? null, // 최상위 영상 or null
+        videos:      ranked.slice(0, 3), // 상위 3개 후보
         searchQuery: module.search_query,
       };
     })
@@ -222,6 +224,7 @@ export async function fetchYouTubeCurriculum(
     return {
       module:      modules[idx],
       video:       null,
+      videos:      [],
       searchQuery: modules[idx].search_query,
     };
   });
